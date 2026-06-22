@@ -230,3 +230,7 @@ If you are using Tebex Headless Checkout:
 1. Ensure `TEBEX_HEADLESS_ENABLED=true` is set in the backend `.env`.
 2. Configure the Tebex environment variables in `.env` using your Tebex Creator API keys.
 3. Every paid digital good added to the marketplace must be mapped to a Tebex package ID. Go to **Admin Panel > Products > Product detail** and select the Tebex package. Note: The package base currency and prices must match exactly for the mapping validation to succeed.
+
+---
+*Note: GitHub connection and deployment setup verified successfully on 2026-06-22.*
+
