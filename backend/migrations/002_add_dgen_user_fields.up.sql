@@ -1,0 +1,9 @@
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS external_id VARCHAR(255) UNIQUE;
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS display_name VARCHAR(100);
+
+UPDATE users
+SET external_id = NULL
+WHERE external_id IS NULL;

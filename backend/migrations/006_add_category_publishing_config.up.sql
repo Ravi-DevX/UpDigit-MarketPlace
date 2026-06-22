@@ -1,0 +1,3 @@
+ALTER TABLE categories
+    ADD COLUMN IF NOT EXISTS minimum_price NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    ADD COLUMN IF NOT EXISTS publishing_config JSONB NOT NULL DEFAULT '{}'::jsonb;
