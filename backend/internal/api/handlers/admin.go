@@ -102,6 +102,21 @@ func (h *Handler) RegisterAdminRoutes(router *gin.RouterGroup) {
 	router.POST("/admin/coupons", h.adminCreateCoupon)
 	router.PUT("/admin/coupons/:id", h.adminUpdateCoupon)
 	router.DELETE("/admin/coupons/:id", h.adminDeleteCoupon)
+
+	router.GET("/admin/tickets/config", h.adminTicketConfig)
+	router.POST("/admin/tickets/categories", h.adminSaveTicketCategory)
+	router.PUT("/admin/tickets/categories/:id", h.adminSaveTicketCategory)
+	router.DELETE("/admin/tickets/categories/:id", h.adminDeleteTicketCategory)
+	router.POST("/admin/tickets/statuses", h.adminSaveTicketStatus)
+	router.PUT("/admin/tickets/statuses/:id", h.adminSaveTicketStatus)
+	router.DELETE("/admin/tickets/statuses/:id", h.adminDeleteTicketStatus)
+	router.POST("/admin/tickets/priorities", h.adminSaveTicketPriority)
+	router.PUT("/admin/tickets/priorities/:id", h.adminSaveTicketPriority)
+	router.DELETE("/admin/tickets/priorities/:id", h.adminDeleteTicketPriority)
+	router.POST("/admin/tickets/features", h.adminSaveTicketFeature)
+	router.PUT("/admin/tickets/features/:id", h.adminSaveTicketFeature)
+	router.DELETE("/admin/tickets/features/:id", h.adminDeleteTicketFeature)
+
 	router.GET("/admin/settings", h.adminGetSettings)
 	router.PUT("/admin/settings", h.adminUpdateSetting)
 

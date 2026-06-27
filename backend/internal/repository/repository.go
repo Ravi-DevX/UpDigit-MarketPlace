@@ -12,6 +12,7 @@ import (
 	"marketplace/backend/internal/models"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -28,6 +29,10 @@ type Repo struct {
 
 func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
+}
+
+func isUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate key")
 }
 
 type ListProductsFilter struct {
@@ -79,10 +84,12 @@ func (r *Repo) GetUserByUsername(ctx context.Context, username string) (models.U
 
 func (r *Repo) GetUserByUsernameOrEmail(ctx context.Context, identifier string) (models.User, error) {
 	q := `
-		SELECT id, COALESCE(external_id, ''), username, display_name, email, password_hash, role, is_verified, is_banned,
-		       avatar_url, profile_banner_url, bio, website_url, discord_tag, balance, created_at, updated_at
-		FROM users
-		WHERE username = $1 OR email = $1
+		SELECT u.id, COALESCE(u.external_id, ''), u.username, u.display_name, u.email, u.password_hash, u.role, u.is_verified, u.is_banned,
+		       u.avatar_url, u.profile_banner_url, u.bio, u.website_url, u.discord_tag, u.balance, u.created_at, u.updated_at
+		FROM users u
+		LEFT JOIN seller_profiles sp ON sp.user_id=u.id
+		WHERE u.username = $1 OR u.email = $1 OR sp.shop_slug = $1
+		ORDER BY CASE WHEN u.username = $1 THEN 0 WHEN sp.shop_slug = $1 THEN 1 ELSE 2 END
 		LIMIT 1
 	`
 	var u models.User
@@ -141,7 +148,7 @@ func (r *Repo) UpsertUserByExternalID(ctx context.Context, externalID, username,
 			username = EXCLUDED.username,
 			display_name = EXCLUDED.display_name,
 			email = EXCLUDED.email,
-			avatar_url = EXCLUDED.avatar_url,
+			avatar_url = COALESCE(users.avatar_url, EXCLUDED.avatar_url),
 			is_verified = users.is_verified OR EXCLUDED.is_verified,
 			updated_at = now()
 		RETURNING id, COALESCE(external_id, ''), username, display_name, email, password_hash, role, is_verified, is_banned,
@@ -1724,6 +1731,1087 @@ func (r *Repo) CreateWebhook(ctx context.Context, webhook *models.Webhook) error
 func (r *Repo) DeleteWebhook(ctx context.Context, sellerID, webhookID string) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM webhooks WHERE id=$1 AND seller_id=$2`, webhookID, sellerID)
 	return err
+}
+
+func (r *Repo) ListConversations(ctx context.Context, userID string) ([]models.Conversation, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT c.id,c.title,c.creator_id,c.is_open,c.context_type,c.context_id,
+		       cp.is_unread,
+		       (SELECT COUNT(*) FROM conversation_participants p WHERE p.conversation_id=c.id AND p.left_at IS NULL)::INT,
+		       (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.deleted_at IS NULL)::INT,
+		       c.last_message_at,c.created_at,c.updated_at,
+		       lm.id,lm.user_id,u.username,u.display_name,u.avatar_url,lm.body,lm.is_system,lm.created_at,lm.updated_at,lm.deleted_at
+		FROM conversation_participants cp
+		JOIN conversations c ON c.id=cp.conversation_id
+		LEFT JOIN LATERAL (
+			SELECT *
+			FROM conversation_messages
+			WHERE conversation_id=c.id AND deleted_at IS NULL
+			ORDER BY created_at DESC
+			LIMIT 1
+		) lm ON true
+		LEFT JOIN users u ON u.id=lm.user_id
+		WHERE cp.user_id=$1 AND cp.left_at IS NULL
+		ORDER BY c.last_message_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var conversations []models.Conversation
+	for rows.Next() {
+		var conversation models.Conversation
+		var last models.ConversationMessage
+		var lastID, lastBody *string
+		if err := rows.Scan(
+			&conversation.ID, &conversation.Title, &conversation.CreatorID, &conversation.IsOpen, &conversation.ContextType, &conversation.ContextID,
+			&conversation.IsUnread, &conversation.ParticipantCount, &conversation.MessageCount,
+			&conversation.LastMessageAt, &conversation.CreatedAt, &conversation.UpdatedAt,
+			&lastID, &last.UserID, &last.Username, &last.DisplayName, &last.AvatarURL, &lastBody, &last.IsSystem, &last.CreatedAt, &last.UpdatedAt, &last.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		if lastID != nil && lastBody != nil {
+			last.ID = *lastID
+			last.ConversationID = conversation.ID
+			last.Body = *lastBody
+			conversation.LastMessage = &last
+		}
+		conversations = append(conversations, conversation)
+	}
+	return conversations, rows.Err()
+}
+
+func (r *Repo) GetConversation(ctx context.Context, conversationID, userID string) (models.Conversation, error) {
+	var conversation models.Conversation
+	err := r.pool.QueryRow(ctx, `
+		SELECT c.id,c.title,c.creator_id,c.is_open,c.context_type,c.context_id,
+		       cp.is_unread,
+		       (SELECT COUNT(*) FROM conversation_participants p WHERE p.conversation_id=c.id AND p.left_at IS NULL)::INT,
+		       (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id=c.id AND m.deleted_at IS NULL)::INT,
+		       c.last_message_at,c.created_at,c.updated_at
+		FROM conversations c
+		JOIN conversation_participants cp ON cp.conversation_id=c.id AND cp.user_id=$2 AND cp.left_at IS NULL
+		WHERE c.id=$1
+	`, conversationID, userID).Scan(
+		&conversation.ID, &conversation.Title, &conversation.CreatorID, &conversation.IsOpen, &conversation.ContextType, &conversation.ContextID,
+		&conversation.IsUnread, &conversation.ParticipantCount, &conversation.MessageCount,
+		&conversation.LastMessageAt, &conversation.CreatedAt, &conversation.UpdatedAt,
+	)
+	if err != nil {
+		return conversation, ErrNotFound
+	}
+
+	participants, err := r.ListConversationParticipants(ctx, conversationID)
+	if err != nil {
+		return conversation, err
+	}
+	messages, err := r.ListConversationMessages(ctx, conversationID, userID)
+	if err != nil {
+		return conversation, err
+	}
+	conversation.Participants = participants
+	if len(messages) > 0 {
+		conversation.LastMessage = &messages[len(messages)-1]
+	}
+	return conversation, nil
+}
+
+func (r *Repo) ListConversationParticipants(ctx context.Context, conversationID string) ([]models.ConversationParticipant, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT u.id,u.username,u.display_name,u.avatar_url,cp.role,cp.is_unread,cp.last_read_at,cp.left_at
+		FROM conversation_participants cp
+		JOIN users u ON u.id=cp.user_id
+		WHERE cp.conversation_id=$1
+		ORDER BY cp.created_at ASC
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var participants []models.ConversationParticipant
+	for rows.Next() {
+		var participant models.ConversationParticipant
+		if err := rows.Scan(&participant.UserID, &participant.Username, &participant.DisplayName, &participant.AvatarURL, &participant.Role, &participant.IsUnread, &participant.LastReadAt, &participant.LeftAt); err != nil {
+			return nil, err
+		}
+		participants = append(participants, participant)
+	}
+	return participants, rows.Err()
+}
+
+func (r *Repo) ListConversationMessages(ctx context.Context, conversationID, userID string) ([]models.ConversationMessage, error) {
+	var allowed bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM conversation_participants
+			WHERE conversation_id=$1 AND user_id=$2 AND left_at IS NULL
+		)
+	`, conversationID, userID).Scan(&allowed); err != nil || !allowed {
+		return nil, ErrNotFound
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.id,m.conversation_id,m.user_id,u.username,u.display_name,u.avatar_url,m.body,m.is_system,m.created_at,m.updated_at,m.deleted_at
+		FROM conversation_messages m
+		LEFT JOIN users u ON u.id=m.user_id
+		WHERE m.conversation_id=$1 AND m.deleted_at IS NULL
+		ORDER BY m.created_at ASC
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []models.ConversationMessage
+	for rows.Next() {
+		var message models.ConversationMessage
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.UserID, &message.Username, &message.DisplayName, &message.AvatarURL, &message.Body, &message.IsSystem, &message.CreatedAt, &message.UpdatedAt, &message.DeletedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
+func (r *Repo) CreateConversation(ctx context.Context, creatorID, title, body string, recipientIDs []string, contextType *string, contextID *string) (models.Conversation, error) {
+	seen := map[string]bool{creatorID: true}
+	participants := []string{creatorID}
+	for _, recipientID := range recipientIDs {
+		recipientID = strings.TrimSpace(recipientID)
+		if recipientID == "" || seen[recipientID] {
+			continue
+		}
+		seen[recipientID] = true
+		participants = append(participants, recipientID)
+	}
+	if len(participants) < 2 {
+		return models.Conversation{}, ErrUnavailable
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return models.Conversation{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var conversationID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO conversations (title, creator_id, context_type, context_id)
+		VALUES ($1,$2,$3,$4)
+		RETURNING id
+	`, title, creatorID, contextType, contextID).Scan(&conversationID); err != nil {
+		return models.Conversation{}, err
+	}
+
+	for _, participantID := range participants {
+		role := "participant"
+		unread := true
+		var lastReadAt *time.Time
+		if participantID == creatorID {
+			role = "creator"
+			unread = false
+			now := time.Now().UTC()
+			lastReadAt = &now
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_participants (conversation_id, user_id, role, is_unread, last_read_at)
+			VALUES ($1,$2,$3,$4,$5)
+		`, conversationID, participantID, role, unread, lastReadAt); err != nil {
+			return models.Conversation{}, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO conversation_messages (conversation_id, user_id, body)
+		VALUES ($1,$2,$3)
+	`, conversationID, creatorID, body); err != nil {
+		return models.Conversation{}, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversations
+		SET last_message_at=now(), updated_at=now()
+		WHERE id=$1
+	`, conversationID); err != nil {
+		return models.Conversation{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return models.Conversation{}, err
+	}
+	return r.GetConversation(ctx, conversationID, creatorID)
+}
+
+func (r *Repo) AddConversationMessage(ctx context.Context, conversationID, userID, body string) (models.ConversationMessage, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return models.ConversationMessage{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var isOpen bool
+	if err := tx.QueryRow(ctx, `
+		SELECT c.is_open
+		FROM conversations c
+		JOIN conversation_participants cp ON cp.conversation_id=c.id AND cp.user_id=$2 AND cp.left_at IS NULL
+		WHERE c.id=$1
+	`, conversationID, userID).Scan(&isOpen); err != nil {
+		return models.ConversationMessage{}, ErrNotFound
+	}
+	if !isOpen {
+		return models.ConversationMessage{}, ErrUnavailable
+	}
+
+	var message models.ConversationMessage
+	err = tx.QueryRow(ctx, `
+		INSERT INTO conversation_messages (conversation_id, user_id, body)
+		VALUES ($1,$2,$3)
+		RETURNING id, conversation_id, user_id, body, is_system, created_at, updated_at, deleted_at
+	`, conversationID, userID, body).Scan(&message.ID, &message.ConversationID, &message.UserID, &message.Body, &message.IsSystem, &message.CreatedAt, &message.UpdatedAt, &message.DeletedAt)
+	if err != nil {
+		return models.ConversationMessage{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_message_at=$1, updated_at=$1 WHERE id=$2`, message.CreatedAt, conversationID); err != nil {
+		return models.ConversationMessage{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversation_participants
+		SET is_unread = user_id <> $2,
+		    last_read_at = CASE WHEN user_id=$2 THEN $3 ELSE last_read_at END,
+		    left_at = NULL
+		WHERE conversation_id=$1
+	`, conversationID, userID, message.CreatedAt); err != nil {
+		return models.ConversationMessage{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return models.ConversationMessage{}, err
+	}
+	return message, nil
+}
+
+func (r *Repo) MarkConversationRead(ctx context.Context, conversationID, userID string) error {
+	cmd, err := r.pool.Exec(ctx, `
+		UPDATE conversation_participants
+		SET is_unread=false, last_read_at=now()
+		WHERE conversation_id=$1 AND user_id=$2 AND left_at IS NULL
+	`, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) LeaveConversation(ctx context.Context, conversationID, userID string) error {
+	cmd, err := r.pool.Exec(ctx, `
+		UPDATE conversation_participants
+		SET is_unread=false, left_at=now()
+		WHERE conversation_id=$1 AND user_id=$2 AND left_at IS NULL
+	`, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) SetConversationOpen(ctx context.Context, conversationID string, open bool) error {
+	cmd, err := r.pool.Exec(ctx, `UPDATE conversations SET is_open=$1, updated_at=now() WHERE id=$2`, open, conversationID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListUsersByRoles(ctx context.Context, roles []string) ([]models.User, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, COALESCE(external_id, ''), username, display_name, email, password_hash, role, is_verified, is_banned,
+		       avatar_url, profile_banner_url, bio, website_url, discord_tag, balance, created_at, updated_at
+		FROM users
+		WHERE role = ANY($1) AND is_banned=false
+	`, roles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []models.User
+	for rows.Next() {
+		var user models.User
+		if err := rows.Scan(
+			&user.ID, &user.ExternalID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Role, &user.IsVerified, &user.IsBanned,
+			&user.AvatarURL, &user.ProfileBannerURL, &user.Bio, &user.WebsiteURL, &user.DiscordTag, &user.Balance, &user.CreatedAt, &user.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+type ListSupportTicketsFilter struct {
+	UserID     string
+	Role       string
+	Scope      string
+	StatusSlug string
+}
+
+func isSupportStaffRole(role string) bool {
+	return role == "admin" || role == "staff"
+}
+
+func (r *Repo) ListSupportTicketCategories(ctx context.Context) ([]models.SupportTicketCategory, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,parent_id,name,slug,description,sort_order,is_active,allow_customer_open,created_at
+		FROM support_ticket_categories
+		WHERE is_active=true
+		ORDER BY COALESCE(parent_id,id),sort_order,name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var categories []models.SupportTicketCategory
+	for rows.Next() {
+		var category models.SupportTicketCategory
+		if err := rows.Scan(&category.ID, &category.ParentID, &category.Name, &category.Slug, &category.Description, &category.SortOrder, &category.IsActive, &category.AllowCustomerOpen, &category.CreatedAt); err != nil {
+			return nil, err
+		}
+		categories = append(categories, category)
+	}
+	return categories, rows.Err()
+}
+
+func (r *Repo) ListAdminSupportTicketCategories(ctx context.Context) ([]models.SupportTicketCategory, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,parent_id,name,slug,description,sort_order,is_active,allow_customer_open,created_at
+		FROM support_ticket_categories
+		ORDER BY COALESCE(parent_id,id),sort_order,name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var categories []models.SupportTicketCategory
+	for rows.Next() {
+		var category models.SupportTicketCategory
+		if err := rows.Scan(&category.ID, &category.ParentID, &category.Name, &category.Slug, &category.Description, &category.SortOrder, &category.IsActive, &category.AllowCustomerOpen, &category.CreatedAt); err != nil {
+			return nil, err
+		}
+		categories = append(categories, category)
+	}
+	return categories, rows.Err()
+}
+
+func (r *Repo) ListSupportTicketStatuses(ctx context.Context) ([]models.SupportTicketStatus, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,slug,name,is_closed,status_on_customer_reply,status_on_staff_reply,include_in_counts,sort_order,created_at
+		FROM support_ticket_statuses
+		ORDER BY sort_order,name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var statuses []models.SupportTicketStatus
+	for rows.Next() {
+		var status models.SupportTicketStatus
+		if err := rows.Scan(&status.ID, &status.Slug, &status.Name, &status.IsClosed, &status.StatusOnCustomerReply, &status.StatusOnStaffReply, &status.IncludeInCounts, &status.SortOrder, &status.CreatedAt); err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
+func (r *Repo) ListSupportTicketPriorities(ctx context.Context) ([]models.SupportTicketPriority, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,slug,name,sort_order,is_active,created_at
+		FROM support_ticket_priorities
+		WHERE is_active=true
+		ORDER BY sort_order,name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var priorities []models.SupportTicketPriority
+	for rows.Next() {
+		var priority models.SupportTicketPriority
+		if err := rows.Scan(&priority.ID, &priority.Slug, &priority.Name, &priority.SortOrder, &priority.IsActive, &priority.CreatedAt); err != nil {
+			return nil, err
+		}
+		priorities = append(priorities, priority)
+	}
+	return priorities, rows.Err()
+}
+
+func (r *Repo) ListAdminSupportTicketPriorities(ctx context.Context) ([]models.SupportTicketPriority, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,slug,name,sort_order,is_active,created_at
+		FROM support_ticket_priorities
+		ORDER BY sort_order,name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var priorities []models.SupportTicketPriority
+	for rows.Next() {
+		var priority models.SupportTicketPriority
+		if err := rows.Scan(&priority.ID, &priority.Slug, &priority.Name, &priority.SortOrder, &priority.IsActive, &priority.CreatedAt); err != nil {
+			return nil, err
+		}
+		priorities = append(priorities, priority)
+	}
+	return priorities, rows.Err()
+}
+
+func (r *Repo) SaveSupportTicketCategory(ctx context.Context, category *models.SupportTicketCategory) error {
+	if category.ID == "" {
+		err := r.pool.QueryRow(ctx, `
+			INSERT INTO support_ticket_categories (parent_id,name,slug,description,sort_order,is_active,allow_customer_open)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			RETURNING id,created_at
+		`, category.ParentID, category.Name, category.Slug, category.Description, category.SortOrder, category.IsActive, category.AllowCustomerOpen).Scan(&category.ID, &category.CreatedAt)
+		if err != nil {
+			if isUniqueViolation(err) {
+				return ErrConflict
+			}
+			return err
+		}
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE support_ticket_categories
+		SET parent_id=$2,name=$3,slug=$4,description=$5,sort_order=$6,is_active=$7,allow_customer_open=$8
+		WHERE id=$1
+	`, category.ID, category.ParentID, category.Name, category.Slug, category.Description, category.SortOrder, category.IsActive, category.AllowCustomerOpen)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) SaveSupportTicketStatus(ctx context.Context, status *models.SupportTicketStatus) error {
+	if status.ID == "" {
+		err := r.pool.QueryRow(ctx, `
+			INSERT INTO support_ticket_statuses (slug,name,is_closed,status_on_customer_reply,status_on_staff_reply,include_in_counts,sort_order)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			RETURNING id,created_at
+		`, status.Slug, status.Name, status.IsClosed, status.StatusOnCustomerReply, status.StatusOnStaffReply, status.IncludeInCounts, status.SortOrder).Scan(&status.ID, &status.CreatedAt)
+		if err != nil {
+			if isUniqueViolation(err) {
+				return ErrConflict
+			}
+			return err
+		}
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE support_ticket_statuses
+		SET slug=$2,name=$3,is_closed=$4,status_on_customer_reply=$5,status_on_staff_reply=$6,include_in_counts=$7,sort_order=$8
+		WHERE id=$1
+	`, status.ID, status.Slug, status.Name, status.IsClosed, status.StatusOnCustomerReply, status.StatusOnStaffReply, status.IncludeInCounts, status.SortOrder)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) SaveSupportTicketPriority(ctx context.Context, priority *models.SupportTicketPriority) error {
+	if priority.ID == "" {
+		err := r.pool.QueryRow(ctx, `
+			INSERT INTO support_ticket_priorities (slug,name,sort_order,is_active)
+			VALUES ($1,$2,$3,$4)
+			RETURNING id,created_at
+		`, priority.Slug, priority.Name, priority.SortOrder, priority.IsActive).Scan(&priority.ID, &priority.CreatedAt)
+		if err != nil {
+			if isUniqueViolation(err) {
+				return ErrConflict
+			}
+			return err
+		}
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE support_ticket_priorities
+		SET slug=$2,name=$3,sort_order=$4,is_active=$5
+		WHERE id=$1
+	`, priority.ID, priority.Slug, priority.Name, priority.SortOrder, priority.IsActive)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteSupportTicketConfig(ctx context.Context, kind, id string) error {
+	var sql string
+	switch kind {
+	case "category":
+		sql = "DELETE FROM support_ticket_categories WHERE id=$1"
+	case "status":
+		sql = "DELETE FROM support_ticket_statuses WHERE id=$1"
+	case "priority":
+		sql = "DELETE FROM support_ticket_priorities WHERE id=$1"
+	default:
+		return ErrNotFound
+	}
+	tag, err := r.pool.Exec(ctx, sql, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListSupportTicketFeatureConfigs(ctx context.Context) ([]models.SupportTicketFeatureConfig, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,feature_type,title,slug,body,config,is_active,sort_order,created_at,updated_at
+		FROM support_ticket_feature_configs
+		ORDER BY feature_type,sort_order,title
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []models.SupportTicketFeatureConfig
+	for rows.Next() {
+		var item models.SupportTicketFeatureConfig
+		var configBytes []byte
+		if err := rows.Scan(&item.ID, &item.FeatureType, &item.Title, &item.Slug, &item.Body, &configBytes, &item.IsActive, &item.SortOrder, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if len(configBytes) > 0 {
+			_ = json.Unmarshal(configBytes, &item.Config)
+		}
+		if item.Config == nil {
+			item.Config = map[string]any{}
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repo) SaveSupportTicketFeatureConfig(ctx context.Context, item *models.SupportTicketFeatureConfig) error {
+	configBytes, err := json.Marshal(item.Config)
+	if err != nil {
+		return err
+	}
+	if item.ID == "" {
+		err := r.pool.QueryRow(ctx, `
+			INSERT INTO support_ticket_feature_configs (feature_type,title,slug,body,config,is_active,sort_order)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			RETURNING id,created_at,updated_at
+		`, item.FeatureType, item.Title, item.Slug, item.Body, configBytes, item.IsActive, item.SortOrder).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
+		if err != nil {
+			if isUniqueViolation(err) {
+				return ErrConflict
+			}
+			return err
+		}
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE support_ticket_feature_configs
+		SET feature_type=$2,title=$3,slug=$4,body=$5,config=$6,is_active=$7,sort_order=$8,updated_at=now()
+		WHERE id=$1
+	`, item.ID, item.FeatureType, item.Title, item.Slug, item.Body, configBytes, item.IsActive, item.SortOrder)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) DeleteSupportTicketFeatureConfig(ctx context.Context, id string) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM support_ticket_feature_configs WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) ListSupportTickets(ctx context.Context, filter ListSupportTicketsFilter) ([]models.SupportTicket, error) {
+	args := []any{filter.UserID}
+	where := []string{"1=1"}
+	if !isSupportStaffRole(filter.Role) || filter.Scope != "all" {
+		where = append(where, `EXISTS (
+			SELECT 1 FROM support_ticket_participants access
+			WHERE access.ticket_id=t.id AND access.user_id=$1 AND access.left_at IS NULL
+		)`)
+	}
+	if strings.TrimSpace(filter.StatusSlug) != "" {
+		args = append(args, strings.TrimSpace(filter.StatusSlug))
+		where = append(where, fmt.Sprintf("s.slug=$%d", len(args)))
+	}
+	query := fmt.Sprintf(`
+		SELECT t.id,t.ticket_ref,t.title,t.user_id,t.category_id,t.status_id,t.priority_id,t.assigned_user_id,t.product_id,t.order_id,
+		       t.is_locked,t.first_message_id,t.last_message_id,t.last_message_at,t.last_message_user_id,t.reply_count,t.closed_at,t.created_at,t.updated_at,
+		       COALESCE(me.is_unread,false),
+		       c.id,c.parent_id,COALESCE(c.name,''),COALESCE(c.slug,''),c.description,COALESCE(c.sort_order,0),COALESCE(c.is_active,false),COALESCE(c.allow_customer_open,false),COALESCE(c.created_at,now()),
+		       s.id,COALESCE(s.slug,''),COALESCE(s.name,''),COALESCE(s.is_closed,false),s.status_on_customer_reply,s.status_on_staff_reply,COALESCE(s.include_in_counts,false),COALESCE(s.sort_order,0),COALESCE(s.created_at,now()),
+		       p.id,COALESCE(p.slug,''),COALESCE(p.name,''),COALESCE(p.sort_order,0),COALESCE(p.is_active,false),COALESCE(p.created_at,now()),
+		       lm.id,COALESCE(lm.ticket_id::text,''),lm.user_id,lu.username,lu.display_name,lu.avatar_url,COALESCE(lm.body,''),COALESCE(lm.is_system,false),COALESCE(lm.created_at,now()),COALESCE(lm.updated_at,now()),lm.deleted_at
+		FROM support_tickets t
+		LEFT JOIN support_ticket_participants me ON me.ticket_id=t.id AND me.user_id=$1
+		LEFT JOIN support_ticket_categories c ON c.id=t.category_id
+		LEFT JOIN support_ticket_statuses s ON s.id=t.status_id
+		LEFT JOIN support_ticket_priorities p ON p.id=t.priority_id
+		LEFT JOIN support_ticket_messages lm ON lm.id=t.last_message_id
+		LEFT JOIN users lu ON lu.id=lm.user_id
+		WHERE %s
+		ORDER BY t.last_message_at DESC,t.created_at DESC
+	`, strings.Join(where, " AND "))
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tickets []models.SupportTicket
+	for rows.Next() {
+		ticket, err := scanSupportTicket(rows)
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, ticket)
+	}
+	return tickets, rows.Err()
+}
+
+func (r *Repo) GetSupportTicket(ctx context.Context, ticketID, userID, role string) (models.SupportTicket, error) {
+	var allowed bool
+	if isSupportStaffRole(role) {
+		allowed = true
+	} else if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM support_ticket_participants
+			WHERE ticket_id=$1 AND user_id=$2 AND left_at IS NULL
+		)
+	`, ticketID, userID).Scan(&allowed); err != nil || !allowed {
+		return models.SupportTicket{}, ErrNotFound
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT t.id,t.ticket_ref,t.title,t.user_id,t.category_id,t.status_id,t.priority_id,t.assigned_user_id,t.product_id,t.order_id,
+		       t.is_locked,t.first_message_id,t.last_message_id,t.last_message_at,t.last_message_user_id,t.reply_count,t.closed_at,t.created_at,t.updated_at,
+		       COALESCE(me.is_unread,false),
+		       c.id,c.parent_id,COALESCE(c.name,''),COALESCE(c.slug,''),c.description,COALESCE(c.sort_order,0),COALESCE(c.is_active,false),COALESCE(c.allow_customer_open,false),COALESCE(c.created_at,now()),
+		       s.id,COALESCE(s.slug,''),COALESCE(s.name,''),COALESCE(s.is_closed,false),s.status_on_customer_reply,s.status_on_staff_reply,COALESCE(s.include_in_counts,false),COALESCE(s.sort_order,0),COALESCE(s.created_at,now()),
+		       p.id,COALESCE(p.slug,''),COALESCE(p.name,''),COALESCE(p.sort_order,0),COALESCE(p.is_active,false),COALESCE(p.created_at,now()),
+		       lm.id,COALESCE(lm.ticket_id::text,''),lm.user_id,lu.username,lu.display_name,lu.avatar_url,COALESCE(lm.body,''),COALESCE(lm.is_system,false),COALESCE(lm.created_at,now()),COALESCE(lm.updated_at,now()),lm.deleted_at
+		FROM support_tickets t
+		LEFT JOIN support_ticket_participants me ON me.ticket_id=t.id AND me.user_id=$2
+		LEFT JOIN support_ticket_categories c ON c.id=t.category_id
+		LEFT JOIN support_ticket_statuses s ON s.id=t.status_id
+		LEFT JOIN support_ticket_priorities p ON p.id=t.priority_id
+		LEFT JOIN support_ticket_messages lm ON lm.id=t.last_message_id
+		LEFT JOIN users lu ON lu.id=lm.user_id
+		WHERE t.id=$1
+	`, ticketID, userID)
+	ticket, err := scanSupportTicket(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ticket, ErrNotFound
+		}
+		return ticket, err
+	}
+	participants, err := r.ListSupportTicketParticipants(ctx, ticket.ID)
+	if err != nil {
+		return ticket, err
+	}
+	ticket.Participants = participants
+	return ticket, nil
+}
+
+func scanSupportTicket(row pgx.Row) (models.SupportTicket, error) {
+	var ticket models.SupportTicket
+	var category models.SupportTicketCategory
+	var status models.SupportTicketStatus
+	var priority models.SupportTicketPriority
+	var last models.SupportTicketMessage
+	var categoryID, statusID, priorityID, lastID *string
+	if err := row.Scan(
+		&ticket.ID, &ticket.TicketRef, &ticket.Title, &ticket.UserID, &ticket.CategoryID, &ticket.StatusID, &ticket.PriorityID, &ticket.AssignedUserID, &ticket.ProductID, &ticket.OrderID,
+		&ticket.IsLocked, &ticket.FirstMessageID, &ticket.LastMessageID, &ticket.LastMessageAt, &ticket.LastMessageUserID, &ticket.ReplyCount, &ticket.ClosedAt, &ticket.CreatedAt, &ticket.UpdatedAt,
+		&ticket.IsUnread,
+		&categoryID, &category.ParentID, &category.Name, &category.Slug, &category.Description, &category.SortOrder, &category.IsActive, &category.AllowCustomerOpen, &category.CreatedAt,
+		&statusID, &status.Slug, &status.Name, &status.IsClosed, &status.StatusOnCustomerReply, &status.StatusOnStaffReply, &status.IncludeInCounts, &status.SortOrder, &status.CreatedAt,
+		&priorityID, &priority.Slug, &priority.Name, &priority.SortOrder, &priority.IsActive, &priority.CreatedAt,
+		&lastID, &last.TicketID, &last.UserID, &last.Username, &last.DisplayName, &last.AvatarURL, &last.Body, &last.IsSystem, &last.CreatedAt, &last.UpdatedAt, &last.DeletedAt,
+	); err != nil {
+		return ticket, err
+	}
+	if categoryID != nil {
+		category.ID = *categoryID
+		ticket.Category = &category
+	}
+	if statusID != nil {
+		status.ID = *statusID
+		ticket.Status = &status
+	}
+	if priorityID != nil {
+		priority.ID = *priorityID
+		ticket.Priority = &priority
+	}
+	if lastID != nil {
+		last.ID = *lastID
+		ticket.LastMessage = &last
+	}
+	return ticket, nil
+}
+
+func (r *Repo) ListSupportTicketParticipants(ctx context.Context, ticketID string) ([]models.SupportTicketParticipant, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT p.user_id,u.username,u.display_name,u.avatar_url,p.role,p.is_unread,p.last_read_at,p.left_at
+		FROM support_ticket_participants p
+		JOIN users u ON u.id=p.user_id
+		WHERE p.ticket_id=$1
+		ORDER BY p.created_at,u.username
+	`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var participants []models.SupportTicketParticipant
+	for rows.Next() {
+		var participant models.SupportTicketParticipant
+		if err := rows.Scan(&participant.UserID, &participant.Username, &participant.DisplayName, &participant.AvatarURL, &participant.Role, &participant.IsUnread, &participant.LastReadAt, &participant.LeftAt); err != nil {
+			return nil, err
+		}
+		participants = append(participants, participant)
+	}
+	return participants, rows.Err()
+}
+
+func (r *Repo) ListSupportTicketMessages(ctx context.Context, ticketID, userID, role string) ([]models.SupportTicketMessage, error) {
+	if !isSupportStaffRole(role) {
+		var allowed bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM support_ticket_participants
+				WHERE ticket_id=$1 AND user_id=$2 AND left_at IS NULL
+			)
+		`, ticketID, userID).Scan(&allowed); err != nil || !allowed {
+			return nil, ErrNotFound
+		}
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.id,m.ticket_id,m.user_id,u.username,u.display_name,u.avatar_url,m.body,m.is_system,m.created_at,m.updated_at,m.deleted_at
+		FROM support_ticket_messages m
+		LEFT JOIN users u ON u.id=m.user_id
+		WHERE m.ticket_id=$1 AND m.deleted_at IS NULL
+		ORDER BY m.created_at,m.id
+	`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []models.SupportTicketMessage
+	for rows.Next() {
+		var message models.SupportTicketMessage
+		if err := rows.Scan(&message.ID, &message.TicketID, &message.UserID, &message.Username, &message.DisplayName, &message.AvatarURL, &message.Body, &message.IsSystem, &message.CreatedAt, &message.UpdatedAt, &message.DeletedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
+func (r *Repo) CreateSupportTicket(ctx context.Context, userID, title, body string, categoryID, priorityID, productID, orderID *string) (models.SupportTicket, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return models.SupportTicket{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	if categoryID == nil {
+		var defaultCategoryID string
+		if err := tx.QueryRow(ctx, `SELECT id FROM support_ticket_categories WHERE slug='marketplace-support'`).Scan(&defaultCategoryID); err != nil {
+			return models.SupportTicket{}, err
+		}
+		categoryID = &defaultCategoryID
+	}
+	if priorityID == nil {
+		var defaultPriorityID string
+		if err := tx.QueryRow(ctx, `SELECT id FROM support_ticket_priorities WHERE slug='normal'`).Scan(&defaultPriorityID); err != nil {
+			return models.SupportTicket{}, err
+		}
+		priorityID = &defaultPriorityID
+	}
+	var statusID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM support_ticket_statuses WHERE slug='waiting_on_staff'`).Scan(&statusID); err != nil {
+		return models.SupportTicket{}, err
+	}
+	var ticketID string
+	ref := strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO support_tickets (ticket_ref,title,user_id,category_id,status_id,priority_id,product_id,order_id,last_message_user_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$3)
+		RETURNING id
+	`, ref, title, userID, categoryID, statusID, priorityID, productID, orderID).Scan(&ticketID); err != nil {
+		return models.SupportTicket{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO support_ticket_participants (ticket_id,user_id,role,is_unread,last_read_at)
+		VALUES ($1,$2,'starter',false,now())
+	`, ticketID, userID); err != nil {
+		return models.SupportTicket{}, err
+	}
+	if productID != nil {
+		var sellerID string
+		if err := tx.QueryRow(ctx, `SELECT seller_id FROM products WHERE id=$1`, *productID).Scan(&sellerID); err == nil && sellerID != "" && sellerID != userID {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO support_ticket_participants (ticket_id,user_id,role,is_unread)
+				VALUES ($1,$2,'seller',true)
+				ON CONFLICT (ticket_id,user_id) DO NOTHING
+			`, ticketID, sellerID); err != nil {
+				return models.SupportTicket{}, err
+			}
+		}
+	}
+	var messageID string
+	var messageAt time.Time
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO support_ticket_messages (ticket_id,user_id,body)
+		VALUES ($1,$2,$3)
+		RETURNING id,created_at
+	`, ticketID, userID, body).Scan(&messageID, &messageAt); err != nil {
+		return models.SupportTicket{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE support_tickets
+		SET first_message_id=$1,last_message_id=$1,last_message_at=$2,last_message_user_id=$3,updated_at=$2
+		WHERE id=$4
+	`, messageID, messageAt, userID, ticketID); err != nil {
+		return models.SupportTicket{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return models.SupportTicket{}, err
+	}
+	return r.GetSupportTicket(ctx, ticketID, userID, "buyer")
+}
+
+func (r *Repo) AddSupportTicketMessage(ctx context.Context, ticketID, userID, role, body string) (models.SupportTicketMessage, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return models.SupportTicketMessage{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var isLocked bool
+	var isClosed bool
+	var customerNext *string
+	var staffNext *string
+	err = tx.QueryRow(ctx, `
+		SELECT t.is_locked,COALESCE(s.is_closed,false),s.status_on_customer_reply,s.status_on_staff_reply
+		FROM support_tickets t
+		LEFT JOIN support_ticket_statuses s ON s.id=t.status_id
+		WHERE t.id=$1
+		FOR UPDATE OF t
+	`, ticketID).Scan(&isLocked, &isClosed, &customerNext, &staffNext)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.SupportTicketMessage{}, ErrNotFound
+		}
+		return models.SupportTicketMessage{}, err
+	}
+	if !isSupportStaffRole(role) {
+		var allowed bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM support_ticket_participants
+				WHERE ticket_id=$1 AND user_id=$2 AND left_at IS NULL
+			)
+		`, ticketID, userID).Scan(&allowed); err != nil || !allowed {
+			return models.SupportTicketMessage{}, ErrNotFound
+		}
+	}
+	if isLocked || isClosed {
+		return models.SupportTicketMessage{}, ErrUnavailable
+	}
+	var message models.SupportTicketMessage
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO support_ticket_messages (ticket_id,user_id,body)
+		VALUES ($1,$2,$3)
+		RETURNING id,ticket_id,user_id,body,is_system,created_at,updated_at,deleted_at
+	`, ticketID, userID, body).Scan(&message.ID, &message.TicketID, &message.UserID, &message.Body, &message.IsSystem, &message.CreatedAt, &message.UpdatedAt, &message.DeletedAt); err != nil {
+		return models.SupportTicketMessage{}, err
+	}
+	nextSlug := customerNext
+	if isSupportStaffRole(role) || role == "seller" {
+		nextSlug = staffNext
+	}
+	var nextStatusID *string
+	if nextSlug != nil && strings.TrimSpace(*nextSlug) != "" {
+		var selectedStatusID string
+		if err := tx.QueryRow(ctx, `SELECT id FROM support_ticket_statuses WHERE slug=$1`, strings.TrimSpace(*nextSlug)).Scan(&selectedStatusID); err == nil {
+			nextStatusID = &selectedStatusID
+		}
+	}
+	if nextStatusID != nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE support_tickets
+			SET last_message_id=$1,last_message_at=$2,last_message_user_id=$3,reply_count=reply_count+1,status_id=$4,closed_at=NULL,updated_at=$2
+			WHERE id=$5
+		`, message.ID, message.CreatedAt, userID, *nextStatusID, ticketID); err != nil {
+			return models.SupportTicketMessage{}, err
+		}
+	} else if _, err := tx.Exec(ctx, `
+		UPDATE support_tickets
+		SET last_message_id=$1,last_message_at=$2,last_message_user_id=$3,reply_count=reply_count+1,updated_at=$2
+		WHERE id=$4
+	`, message.ID, message.CreatedAt, userID, ticketID); err != nil {
+		return models.SupportTicketMessage{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE support_ticket_participants
+		SET is_unread=true
+		WHERE ticket_id=$1 AND user_id<>$2 AND left_at IS NULL
+	`, ticketID, userID); err != nil {
+		return models.SupportTicketMessage{}, err
+	}
+	if isSupportStaffRole(role) {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO support_ticket_participants (ticket_id,user_id,role,is_unread,last_read_at)
+			VALUES ($1,$2,'staff',false,now())
+			ON CONFLICT (ticket_id,user_id) DO UPDATE SET role='staff',left_at=NULL,last_read_at=now(),is_unread=false
+		`, ticketID, userID); err != nil {
+			return models.SupportTicketMessage{}, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `
+			UPDATE support_ticket_participants
+			SET is_unread=false,last_read_at=now(),left_at=NULL
+			WHERE ticket_id=$1 AND user_id=$2
+		`, ticketID, userID); err != nil {
+			return models.SupportTicketMessage{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return models.SupportTicketMessage{}, err
+	}
+	user, err := r.GetUserByID(ctx, userID)
+	if err == nil {
+		message.Username = &user.Username
+		message.DisplayName = user.DisplayName
+		message.AvatarURL = user.AvatarURL
+	}
+	return message, nil
+}
+
+func (r *Repo) MarkSupportTicketRead(ctx context.Context, ticketID, userID, role string) error {
+	cmd, err := r.pool.Exec(ctx, `
+		UPDATE support_ticket_participants
+		SET is_unread=false,last_read_at=now()
+		WHERE ticket_id=$1 AND user_id=$2 AND left_at IS NULL
+	`, ticketID, userID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		if isSupportStaffRole(role) {
+			var exists bool
+			if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM support_tickets WHERE id=$1)`, ticketID).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				_, err := r.pool.Exec(ctx, `
+					INSERT INTO support_ticket_participants (ticket_id,user_id,role,is_unread,last_read_at)
+					VALUES ($1,$2,'staff',false,now())
+					ON CONFLICT (ticket_id,user_id) DO UPDATE SET is_unread=false,last_read_at=now(),left_at=NULL
+				`, ticketID, userID)
+				return err
+			}
+		}
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) UpdateSupportTicketStatus(ctx context.Context, ticketID, statusSlug, actorID string) (models.SupportTicket, error) {
+	var statusID string
+	var closed bool
+	if err := r.pool.QueryRow(ctx, `SELECT id,is_closed FROM support_ticket_statuses WHERE slug=$1`, statusSlug).Scan(&statusID, &closed); err != nil {
+		return models.SupportTicket{}, ErrNotFound
+	}
+	cmd, err := r.pool.Exec(ctx, `
+		UPDATE support_tickets
+		SET status_id=$1,closed_at=CASE WHEN $2 THEN now() ELSE NULL END,updated_at=now()
+		WHERE id=$3
+	`, statusID, closed, ticketID)
+	if err != nil {
+		return models.SupportTicket{}, err
+	}
+	if cmd.RowsAffected() == 0 {
+		return models.SupportTicket{}, ErrNotFound
+	}
+	return r.GetSupportTicket(ctx, ticketID, actorID, "admin")
+}
+
+func (r *Repo) AssignSupportTicket(ctx context.Context, ticketID, assigneeID, actorID string) (models.SupportTicket, error) {
+	if strings.TrimSpace(assigneeID) == "" {
+		_, err := r.pool.Exec(ctx, `UPDATE support_tickets SET assigned_user_id=NULL,updated_at=now() WHERE id=$1`, ticketID)
+		if err != nil {
+			return models.SupportTicket{}, err
+		}
+		return r.GetSupportTicket(ctx, ticketID, actorID, "admin")
+	}
+	if _, err := r.GetUserByID(ctx, assigneeID); err != nil {
+		return models.SupportTicket{}, ErrNotFound
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return models.SupportTicket{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `UPDATE support_tickets SET assigned_user_id=$1,updated_at=now() WHERE id=$2`, assigneeID, ticketID); err != nil {
+		return models.SupportTicket{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO support_ticket_participants (ticket_id,user_id,role,is_unread)
+		VALUES ($1,$2,'staff',true)
+		ON CONFLICT (ticket_id,user_id) DO UPDATE SET role='staff',left_at=NULL,is_unread=true
+	`, ticketID, assigneeID); err != nil {
+		return models.SupportTicket{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return models.SupportTicket{}, err
+	}
+	return r.GetSupportTicket(ctx, ticketID, actorID, "admin")
 }
 
 func (r *Repo) ListReports(ctx context.Context) ([]models.Report, error) {

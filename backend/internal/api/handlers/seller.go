@@ -58,7 +58,29 @@ func (h *Handler) sellerProductDetail(c *gin.Context) {
 }
 
 func (h *Handler) RegisterSellerApplyRoute(router *gin.RouterGroup) {
+	router.GET("/seller/application", h.sellerApplication)
 	router.POST("/seller/apply", h.sellerApply)
+}
+
+func (h *Handler) sellerApplication(c *gin.Context) {
+	userID := middleware.AuthUserID(c)
+	profile, err := h.Repo.GetSellerProfileByUserID(c, userID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "none", "profile": nil})
+		return
+	}
+	if profile.Approved {
+		user, err := h.Repo.GetUserByID(c, userID)
+		if err == nil && user.Role != "admin" && user.Role != "staff" && user.Role != "seller" {
+			if err := h.Repo.UpdateUserRole(c, userID, "seller"); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "could not promote seller"})
+				return
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "approved", "profile": profile})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "pending", "profile": profile})
 }
 
 func (h *Handler) sellerApply(c *gin.Context) {
@@ -78,10 +100,10 @@ func (h *Handler) sellerApply(c *gin.Context) {
 					return
 				}
 			}
-			c.Status(http.StatusOK)
+			c.JSON(http.StatusOK, gin.H{"status": "approved", "profile": existing})
 			return
 		}
-		c.Status(http.StatusAccepted)
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending", "profile": existing})
 		return
 	}
 	profile := &models.SellerProfile{
@@ -97,7 +119,12 @@ func (h *Handler) sellerApply(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not apply"})
 		return
 	}
-	c.Status(http.StatusCreated)
+	created, err := h.Repo.GetSellerProfileByUserID(c, userID)
+	if err != nil {
+		c.JSON(http.StatusCreated, gin.H{"status": "pending", "profile": profile})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"status": "pending", "profile": created})
 }
 
 func (h *Handler) sellerSettings(c *gin.Context) {

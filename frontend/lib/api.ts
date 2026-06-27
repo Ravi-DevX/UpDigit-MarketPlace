@@ -5,6 +5,8 @@ import {
   AdminSettings,
   AuditLog,
   Category,
+  Conversation,
+  ConversationMessage,
   Coupon,
   Order,
   MarketplaceNotification,
@@ -23,6 +25,12 @@ import {
   SellerEarningsPayload,
   SellerProfile,
   StatsPayload,
+  SupportTicket,
+  SupportTicketCategory,
+  SupportTicketFeatureConfig,
+  SupportTicketMessage,
+  SupportTicketPriority,
+  SupportTicketStatus,
   User,
   Webhook,
 } from "@/types/marketplace";
@@ -87,6 +95,11 @@ export type SellerApplyInput = {
   shop_name: string;
   shop_slug: string;
   shop_description?: string;
+};
+
+export type SellerApplicationStatus = {
+  status: "none" | "pending" | "approved";
+  profile: SellerProfile | null;
 };
 
 export type UpdateMeInput = {
@@ -493,8 +506,11 @@ export async function fetchUserByUsername(username: string): Promise<User> {
   return payload as unknown as User;
 }
 
-export async function fetchSellerProducts(username: string): Promise<Product[]> {
-  const { data } = await apiClient.get<ApiResponse<Product[]>>(`/users/${username}/products`);
+export async function fetchSellerProducts(
+  username: string,
+  params: { search?: string; category?: string; sort?: string; page?: number; limit?: number } = {},
+): Promise<Product[]> {
+  const { data } = await apiClient.get<ApiResponse<Product[]>>(`/users/${username}/products`, { params });
   return normalizeArrayPayload<Product>(unwrapPayload(data));
 }
 
@@ -900,6 +916,186 @@ export async function markAllNotificationsRead(): Promise<void> {
   await apiClient.put("/notifications/read-all");
 }
 
+export async function fetchConversations(): Promise<Conversation[]> {
+  const { data } = await apiClient.get<ApiResponse<Conversation[]>>("/conversations");
+  return normalizeArrayPayload<Conversation>(unwrapPayload(data), ["data", "conversations", "items", "payload"]);
+}
+
+export async function fetchConversation(id: string): Promise<{ conversation: Conversation; messages: ConversationMessage[] }> {
+  const { data } = await apiClient.get<ApiResponse<{ conversation: Conversation; messages: ConversationMessage[] }>>(`/conversations/${id}`);
+  return unwrapPayload(data);
+}
+
+export async function createConversation(input: {
+  title: string;
+  body: string;
+  recipient_ids: string[];
+  context_type?: string | null;
+  context_id?: string | null;
+}): Promise<Conversation> {
+  const { data } = await apiClient.post<ApiResponse<Conversation>>("/conversations", input);
+  return unwrapPayload(data);
+}
+
+export async function replyConversation(id: string, body: string): Promise<ConversationMessage> {
+  const { data } = await apiClient.post<ApiResponse<ConversationMessage>>(`/conversations/${id}/messages`, { body });
+  return unwrapPayload(data);
+}
+
+export async function markConversationRead(id: string): Promise<void> {
+  await apiClient.put(`/conversations/${id}/read`);
+}
+
+export async function leaveConversation(id: string): Promise<void> {
+  await apiClient.post(`/conversations/${id}/leave`);
+}
+
+export async function fetchTicketMeta(): Promise<{
+  categories: SupportTicketCategory[];
+  statuses: SupportTicketStatus[];
+  priorities: SupportTicketPriority[];
+}> {
+  const { data } = await apiClient.get<ApiResponse<{ categories: SupportTicketCategory[]; statuses: SupportTicketStatus[]; priorities: SupportTicketPriority[] }>>("/tickets/meta");
+  return unwrapPayload(data);
+}
+
+export async function fetchAdminTicketConfig(): Promise<{
+  categories: SupportTicketCategory[];
+  statuses: SupportTicketStatus[];
+  priorities: SupportTicketPriority[];
+  features: SupportTicketFeatureConfig[];
+}> {
+  const { data } = await apiClient.get<
+    ApiResponse<{ categories: SupportTicketCategory[]; statuses: SupportTicketStatus[]; priorities: SupportTicketPriority[]; features: SupportTicketFeatureConfig[] }>
+  >("/admin/tickets/config");
+  return unwrapPayload(data);
+}
+
+export async function saveAdminTicketCategory(
+  input: Partial<SupportTicketCategory> & { name: string; slug?: string },
+): Promise<void> {
+  const payload = {
+    parent_id: input.parent_id || null,
+    name: input.name,
+    slug: input.slug || input.name,
+    description: input.description || null,
+    sort_order: input.sort_order ?? 0,
+    is_active: input.is_active ?? true,
+    allow_customer_open: input.allow_customer_open ?? true,
+  };
+  if (input.id) {
+    await apiClient.put(`/admin/tickets/categories/${input.id}`, payload);
+    return;
+  }
+  await apiClient.post("/admin/tickets/categories", payload);
+}
+
+export async function deleteAdminTicketCategory(id: string): Promise<void> {
+  await apiClient.delete(`/admin/tickets/categories/${id}`);
+}
+
+export async function saveAdminTicketStatus(
+  input: Partial<SupportTicketStatus> & { name: string; slug?: string },
+): Promise<void> {
+  const payload = {
+    name: input.name,
+    slug: input.slug || input.name,
+    is_closed: input.is_closed ?? false,
+    status_on_customer_reply: input.status_on_customer_reply || null,
+    status_on_staff_reply: input.status_on_staff_reply || null,
+    include_in_counts: input.include_in_counts ?? true,
+    sort_order: input.sort_order ?? 0,
+  };
+  if (input.id) {
+    await apiClient.put(`/admin/tickets/statuses/${input.id}`, payload);
+    return;
+  }
+  await apiClient.post("/admin/tickets/statuses", payload);
+}
+
+export async function deleteAdminTicketStatus(id: string): Promise<void> {
+  await apiClient.delete(`/admin/tickets/statuses/${id}`);
+}
+
+export async function saveAdminTicketPriority(
+  input: Partial<SupportTicketPriority> & { name: string; slug?: string },
+): Promise<void> {
+  const payload = {
+    name: input.name,
+    slug: input.slug || input.name,
+    sort_order: input.sort_order ?? 0,
+    is_active: input.is_active ?? true,
+  };
+  if (input.id) {
+    await apiClient.put(`/admin/tickets/priorities/${input.id}`, payload);
+    return;
+  }
+  await apiClient.post("/admin/tickets/priorities", payload);
+}
+
+export async function deleteAdminTicketPriority(id: string): Promise<void> {
+  await apiClient.delete(`/admin/tickets/priorities/${id}`);
+}
+
+export async function saveAdminTicketFeature(
+  input: Partial<SupportTicketFeatureConfig> & { feature_type: string; title: string; slug?: string },
+): Promise<void> {
+  const payload = {
+    feature_type: input.feature_type,
+    title: input.title,
+    slug: input.slug || input.title,
+    body: input.body || null,
+    config: input.config || {},
+    sort_order: input.sort_order ?? 0,
+    is_active: input.is_active ?? true,
+  };
+  if (input.id) {
+    await apiClient.put(`/admin/tickets/features/${input.id}`, payload);
+    return;
+  }
+  await apiClient.post("/admin/tickets/features", payload);
+}
+
+export async function deleteAdminTicketFeature(id: string): Promise<void> {
+  await apiClient.delete(`/admin/tickets/features/${id}`);
+}
+
+export async function fetchTickets(params: { scope?: "all"; status?: string } = {}): Promise<SupportTicket[]> {
+  const { data } = await apiClient.get<ApiResponse<SupportTicket[]>>("/tickets", { params });
+  return normalizeArrayPayload<SupportTicket>(unwrapPayload(data), ["data", "tickets", "items", "payload"]);
+}
+
+export async function fetchTicket(id: string): Promise<{ ticket: SupportTicket; messages: SupportTicketMessage[] }> {
+  const { data } = await apiClient.get<ApiResponse<{ ticket: SupportTicket; messages: SupportTicketMessage[] }>>(`/tickets/${id}`);
+  return unwrapPayload(data);
+}
+
+export async function createTicket(input: {
+  title: string;
+  body: string;
+  category_id?: string | null;
+  priority_id?: string | null;
+  product_id?: string | null;
+  order_id?: string | null;
+}): Promise<SupportTicket> {
+  const { data } = await apiClient.post<ApiResponse<SupportTicket>>("/tickets", input);
+  return unwrapPayload(data);
+}
+
+export async function replyTicket(id: string, body: string): Promise<SupportTicketMessage> {
+  const { data } = await apiClient.post<ApiResponse<SupportTicketMessage>>(`/tickets/${id}/messages`, { body });
+  return unwrapPayload(data);
+}
+
+export async function updateTicketStatus(id: string, status: string): Promise<SupportTicket> {
+  const { data } = await apiClient.put<ApiResponse<SupportTicket>>(`/tickets/${id}/status`, { status });
+  return unwrapPayload(data);
+}
+
+export async function markTicketRead(id: string): Promise<void> {
+  await apiClient.put(`/tickets/${id}/read`);
+}
+
 export async function fetchOrderDownload(id: string): Promise<{ download_url: string; download_token: string; expires_at: string }> {
   const { data } = await apiClient.get<ApiResponse<{ download_url: string; download_token: string; expires_at: string }>>(`/orders/${id}/download`);
   return unwrapPayload(data);
@@ -1003,6 +1199,12 @@ export async function requestLogout() {
   clearAuthState();
 }
 
-export async function applySeller(input: SellerApplyInput): Promise<void> {
-  await apiClient.post("/seller/apply", input);
+export async function fetchSellerApplication(): Promise<SellerApplicationStatus> {
+  const { data } = await apiClient.get<ApiResponse<SellerApplicationStatus>>("/seller/application");
+  return unwrapPayload(data);
+}
+
+export async function applySeller(input: SellerApplyInput): Promise<SellerApplicationStatus> {
+  const { data } = await apiClient.post<ApiResponse<SellerApplicationStatus>>("/seller/apply", input);
+  return unwrapPayload(data);
 }

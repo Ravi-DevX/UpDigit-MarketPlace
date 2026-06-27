@@ -83,6 +83,7 @@ export interface Product {
   seller?: {
     id: string;
     username: string;
+    display_name?: string | null;
     avatar_url?: string | null;
     seller_profile?: SellerProfile | null;
   };
@@ -281,6 +282,147 @@ export interface Webhook {
   events: string[];
   is_active: boolean;
   created_at: string;
+}
+
+export interface ConversationParticipant {
+  user_id: string;
+  username: string;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  role: string;
+  is_unread: boolean;
+  last_read_at?: string | null;
+  left_at?: string | null;
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversation_id: string;
+  user_id?: string | null;
+  username?: string | null;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  body: string;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  creator_id: string;
+  is_open: boolean;
+  context_type?: string | null;
+  context_id?: string | null;
+  is_unread: boolean;
+  participant_count: number;
+  message_count: number;
+  last_message_at: string;
+  created_at: string;
+  updated_at: string;
+  participants?: ConversationParticipant[];
+  last_message?: ConversationMessage | null;
+}
+
+export interface SupportTicketCategory {
+  id: string;
+  parent_id?: string | null;
+  name: string;
+  slug: string;
+  description?: string | null;
+  sort_order: number;
+  is_active: boolean;
+  allow_customer_open: boolean;
+  created_at: string;
+}
+
+export interface SupportTicketStatus {
+  id: string;
+  slug: string;
+  name: string;
+  is_closed: boolean;
+  status_on_customer_reply?: string | null;
+  status_on_staff_reply?: string | null;
+  include_in_counts: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface SupportTicketPriority {
+  id: string;
+  slug: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface SupportTicketFeatureConfig {
+  id: string;
+  feature_type: string;
+  title: string;
+  slug: string;
+  body?: string | null;
+  config: Record<string, unknown>;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SupportTicketParticipant {
+  user_id: string;
+  username: string;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  role: string;
+  is_unread: boolean;
+  last_read_at?: string | null;
+  left_at?: string | null;
+}
+
+export interface SupportTicketMessage {
+  id: string;
+  ticket_id: string;
+  user_id?: string | null;
+  username?: string | null;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  body: string;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+}
+
+export interface SupportTicket {
+  id: string;
+  ticket_ref: string;
+  title: string;
+  user_id?: string | null;
+  category_id?: string | null;
+  status_id?: string | null;
+  priority_id?: string | null;
+  assigned_user_id?: string | null;
+  product_id?: string | null;
+  order_id?: string | null;
+  is_locked: boolean;
+  first_message_id?: string | null;
+  last_message_id?: string | null;
+  last_message_at: string;
+  last_message_user_id?: string | null;
+  reply_count: number;
+  closed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  is_unread: boolean;
+  category?: SupportTicketCategory | null;
+  status?: SupportTicketStatus | null;
+  priority?: SupportTicketPriority | null;
+  participants?: SupportTicketParticipant[];
+  last_message?: SupportTicketMessage | null;
 }
 
 export interface Review {

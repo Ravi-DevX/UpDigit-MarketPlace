@@ -316,6 +316,7 @@ func (h *Handler) completeTebexOrder(c *gin.Context, order models.Order, payment
 			sellerBody := "A customer purchased " + product.Title + "."
 			sellerLink := "/seller/orders"
 			_ = h.Repo.AddNotification(c, &models.Notification{UserID: order.SellerID, Type: "product_sale", Title: "New product sale", Body: &sellerBody, Link: &sellerLink})
+			h.createPurchaseConversation(c, order, product)
 		}
 		h.enqueueWebhookEvent(c, order.SellerID, "purchase", map[string]any{
 			"order_id":       order.ID,
@@ -333,6 +334,86 @@ func (h *Handler) completeTebexOrder(c *gin.Context, order models.Order, payment
 		return order, completed, err
 	}
 	return order, completed, nil
+}
+
+func (h *Handler) createPurchaseConversation(c *gin.Context, order models.Order, product models.Product) {
+	if !metadataBool(product.Metadata, "auto_conversation") {
+		return
+	}
+	title := metadataString(product.Metadata, "conversation_title")
+	if title == "" {
+		title = "Thanks for purchasing {{product}}"
+	}
+	body := metadataString(product.Metadata, "conversation_message")
+	if body == "" {
+		body = metadataString(product.Metadata, "purchase_message")
+	}
+	if body == "" {
+		body = "Thanks for purchasing {{product}}. You can reply here if you need help with the product."
+	}
+	buyer, buyerErr := h.Repo.GetUserByID(c, order.BuyerID)
+	seller, sellerErr := h.Repo.GetUserByID(c, order.SellerID)
+	if buyerErr != nil || sellerErr != nil {
+		return
+	}
+	replacements := map[string]string{
+		"{{product}}": product.Title,
+		"{{user}}":    buyer.Username,
+		"{{buyer}}":   buyer.Username,
+		"{{seller}}":  seller.Username,
+		"{{order}}":   order.ID,
+	}
+	title = applyTemplateVars(title, replacements)
+	body = applyTemplateVars(body, replacements)
+	contextType := "order"
+	contextID := order.ID
+	conversation, err := h.Repo.CreateConversation(c, order.SellerID, title, body, []string{order.BuyerID}, &contextType, &contextID)
+	if err != nil {
+		return
+	}
+	if metadataBool(product.Metadata, "lock_conversation") {
+		_ = h.Repo.SetConversationOpen(c, conversation.ID, false)
+	}
+}
+
+func metadataBool(metadata map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true") || strings.TrimSpace(typed) == "1"
+	default:
+		return false
+	}
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func applyTemplateVars(text string, replacements map[string]string) string {
+	for token, value := range replacements {
+		text = strings.ReplaceAll(text, token, value)
+	}
+	return strings.TrimSpace(text)
 }
 
 func tebexCheckoutSession(order models.Order, basket payment.TebexBasket, discount float64) gin.H {

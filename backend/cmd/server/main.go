@@ -85,6 +85,8 @@ func main() {
 	h.RegisterNotificationRoutes(secured)
 	h.RegisterReportRoutes(secured)
 	h.RegisterUserRoutes(public, secured)
+	h.RegisterConversationRoutes(secured)
+	h.RegisterTicketRoutes(secured)
 
 	// Seller/admin restricted endpoints
 	admin := api.Group("")

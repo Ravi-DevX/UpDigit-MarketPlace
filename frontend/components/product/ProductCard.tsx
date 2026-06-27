@@ -6,6 +6,8 @@ import { PriceDisplay } from "@/components/common/PriceDisplay";
 import { RatingStars } from "@/components/common/RatingStars";
 
 export function ProductCard({ product }: { product: Product }) {
+  const sellerName = product.seller?.seller_profile?.shop_name || product.seller?.display_name || product.seller?.username || "seller";
+  const sellerSlug = product.seller?.seller_profile?.shop_slug || product.seller?.username || product.slug;
   return (
     <article className="group flex h-full min-w-0 flex-col overflow-hidden rounded-md border border-border bg-surface shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-xl transition hover:-translate-y-1 hover:border-primary/45 hover:bg-elevated hover:shadow-[0_24px_90px_rgba(0,0,0,0.34)]">
       <Link href={`/products/${product.slug}`}>
@@ -36,8 +38,8 @@ export function ProductCard({ product }: { product: Product }) {
             </Link>
             <p className="mt-1 line-clamp-1 text-sm text-textSecondary">
               by{" "}
-              <Link className="text-textSecondary hover:text-textPrimary" href={`/sellers/${product.seller?.username ?? product.slug}`}>
-                {product.seller?.username ?? "seller"}
+              <Link className="text-textSecondary hover:text-textPrimary" href={`/sellers/${sellerSlug}`}>
+                {sellerName}
               </Link>
             </p>
           </div>

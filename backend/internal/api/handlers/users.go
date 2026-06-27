@@ -220,10 +220,38 @@ func (h *Handler) getUserProducts(c *gin.Context) {
 	}
 	filter := repository.ListProductsFilter{
 		Status:           "approved",
-		Limit:            50,
+		Limit:            100,
 		Offset:           0,
-		Sort:             "newest",
+		Sort:             strings.TrimSpace(c.Query("sort")),
 		DiscoverableOnly: true,
+	}
+	if filter.Sort == "" {
+		filter.Sort = "newest"
+	}
+	if v := strings.TrimSpace(c.Query("page")); v != "" {
+		var page int
+		fmt.Sscanf(v, "%d", &page)
+		if page > 1 {
+			filter.Offset = (page - 1) * filter.Limit
+		}
+	}
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		var limit int
+		fmt.Sscanf(v, "%d", &limit)
+		if limit > 0 && limit <= 100 {
+			filter.Limit = limit
+		}
+	}
+	filter.Search = strings.TrimSpace(c.Query("search"))
+	if filter.Search == "" {
+		filter.Search = strings.TrimSpace(c.Query("q"))
+	}
+	if category := strings.TrimSpace(c.Query("category")); category != "" && category != "all" {
+		if found, err := h.Repo.GetCategoryBySlug(c, category); err == nil {
+			filter.CategoryID = &found.ID
+		} else if found, err := h.Repo.GetCategory(c, category); err == nil {
+			filter.CategoryID = &found.ID
+		}
 	}
 	filter.SellerID = &user.ID
 	products, total, err := h.Repo.ListProducts(c, filter)

@@ -290,3 +290,144 @@ type Webhook struct {
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+type ConversationParticipant struct {
+	UserID      string     `json:"user_id"`
+	Username    string     `json:"username"`
+	DisplayName *string    `json:"display_name"`
+	AvatarURL   *string    `json:"avatar_url"`
+	Role        string     `json:"role"`
+	IsUnread    bool       `json:"is_unread"`
+	LastReadAt  *time.Time `json:"last_read_at"`
+	LeftAt      *time.Time `json:"left_at,omitempty"`
+}
+
+type Conversation struct {
+	ID               string                    `json:"id"`
+	Title            string                    `json:"title"`
+	CreatorID        string                    `json:"creator_id"`
+	IsOpen           bool                      `json:"is_open"`
+	ContextType      *string                   `json:"context_type"`
+	ContextID        *string                   `json:"context_id"`
+	IsUnread         bool                      `json:"is_unread"`
+	ParticipantCount int                       `json:"participant_count"`
+	MessageCount     int                       `json:"message_count"`
+	LastMessageAt    time.Time                 `json:"last_message_at"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
+	Participants     []ConversationParticipant `json:"participants,omitempty"`
+	LastMessage      *ConversationMessage      `json:"last_message,omitempty"`
+}
+
+type ConversationMessage struct {
+	ID             string     `json:"id"`
+	ConversationID string     `json:"conversation_id"`
+	UserID         *string    `json:"user_id"`
+	Username       *string    `json:"username"`
+	DisplayName    *string    `json:"display_name"`
+	AvatarURL      *string    `json:"avatar_url"`
+	Body           string     `json:"body"`
+	IsSystem       bool       `json:"is_system"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+}
+
+type SupportTicketCategory struct {
+	ID                string    `json:"id"`
+	ParentID          *string   `json:"parent_id"`
+	Name              string    `json:"name"`
+	Slug              string    `json:"slug"`
+	Description       *string   `json:"description"`
+	SortOrder         int       `json:"sort_order"`
+	IsActive          bool      `json:"is_active"`
+	AllowCustomerOpen bool      `json:"allow_customer_open"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+type SupportTicketStatus struct {
+	ID                    string    `json:"id"`
+	Slug                  string    `json:"slug"`
+	Name                  string    `json:"name"`
+	IsClosed              bool      `json:"is_closed"`
+	StatusOnCustomerReply *string   `json:"status_on_customer_reply"`
+	StatusOnStaffReply    *string   `json:"status_on_staff_reply"`
+	IncludeInCounts       bool      `json:"include_in_counts"`
+	SortOrder             int       `json:"sort_order"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+type SupportTicketPriority struct {
+	ID        string    `json:"id"`
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	SortOrder int       `json:"sort_order"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SupportTicketFeatureConfig struct {
+	ID          string         `json:"id"`
+	FeatureType string         `json:"feature_type"`
+	Title       string         `json:"title"`
+	Slug        string         `json:"slug"`
+	Body        *string        `json:"body"`
+	Config      map[string]any `json:"config"`
+	IsActive    bool           `json:"is_active"`
+	SortOrder   int            `json:"sort_order"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
+type SupportTicketParticipant struct {
+	UserID      string     `json:"user_id"`
+	Username    string     `json:"username"`
+	DisplayName *string    `json:"display_name"`
+	AvatarURL   *string    `json:"avatar_url"`
+	Role        string     `json:"role"`
+	IsUnread    bool       `json:"is_unread"`
+	LastReadAt  *time.Time `json:"last_read_at"`
+	LeftAt      *time.Time `json:"left_at,omitempty"`
+}
+
+type SupportTicket struct {
+	ID                string                     `json:"id"`
+	TicketRef         string                     `json:"ticket_ref"`
+	Title             string                     `json:"title"`
+	UserID            *string                    `json:"user_id"`
+	CategoryID        *string                    `json:"category_id"`
+	StatusID          *string                    `json:"status_id"`
+	PriorityID        *string                    `json:"priority_id"`
+	AssignedUserID    *string                    `json:"assigned_user_id"`
+	ProductID         *string                    `json:"product_id"`
+	OrderID           *string                    `json:"order_id"`
+	IsLocked          bool                       `json:"is_locked"`
+	FirstMessageID    *string                    `json:"first_message_id"`
+	LastMessageID     *string                    `json:"last_message_id"`
+	LastMessageAt     time.Time                  `json:"last_message_at"`
+	LastMessageUserID *string                    `json:"last_message_user_id"`
+	ReplyCount        int                        `json:"reply_count"`
+	ClosedAt          *time.Time                 `json:"closed_at"`
+	CreatedAt         time.Time                  `json:"created_at"`
+	UpdatedAt         time.Time                  `json:"updated_at"`
+	IsUnread          bool                       `json:"is_unread"`
+	Category          *SupportTicketCategory     `json:"category,omitempty"`
+	Status            *SupportTicketStatus       `json:"status,omitempty"`
+	Priority          *SupportTicketPriority     `json:"priority,omitempty"`
+	Participants      []SupportTicketParticipant `json:"participants,omitempty"`
+	LastMessage       *SupportTicketMessage      `json:"last_message,omitempty"`
+}
+
+type SupportTicketMessage struct {
+	ID          string     `json:"id"`
+	TicketID    string     `json:"ticket_id"`
+	UserID      *string    `json:"user_id"`
+	Username    *string    `json:"username"`
+	DisplayName *string    `json:"display_name"`
+	AvatarURL   *string    `json:"avatar_url"`
+	Body        string     `json:"body"`
+	IsSystem    bool       `json:"is_system"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
+}

@@ -16,7 +16,9 @@ import {
 import { AuthGate } from "@/components/auth/AuthGate";
 import { Footer } from "@/components/layout/Footer";
 import { Navbar } from "@/components/layout/Navbar";
+import { SellerOnboardingPanel } from "@/components/seller/SellerOnboardingPanel";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/store/auth";
 
 const sellerItems = [
   { href: "/seller", icon: Home, label: "Overview" },
@@ -31,11 +33,18 @@ const sellerItems = [
 
 export default function SellerLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const user = useAuthStore((state) => state.user);
+  const canUseSellerStudio = user?.role === "seller" || user?.role === "admin";
 
   return (
     <div className="min-h-screen bg-background text-textPrimary">
       <Navbar />
-      <AuthGate allowedRoles={["seller", "admin"]} redirectTo="/" label="Checking seller permissions...">
+      <AuthGate loginRedirect label="Checking creator access...">
+        {!canUseSellerStudio ? (
+          <div className="site-frame py-8">
+            <SellerOnboardingPanel />
+          </div>
+        ) : (
         <div className="site-frame flex flex-col gap-5 py-8 lg:flex-row">
           <aside className="glass-panel h-max rounded-panel p-3 lg:sticky lg:top-28 lg:w-[var(--sidebar-width)]">
             <Link href="/" className="mb-5 flex items-center gap-3 rounded-2xl border border-border bg-surface p-3">
@@ -97,6 +106,7 @@ export default function SellerLayout({ children }: { children: React.ReactNode }
             </section>
           </main>
         </div>
+        )}
       </AuthGate>
       <Footer />
     </div>

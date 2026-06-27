@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Download, Loader2, Pencil, ShoppingCart, Star, UploadCloud } from "lucide-react";
-import { addToCart, downloadFreeProduct, downloadOwnerProduct, fetchOrderDownload, fetchProductEntitlement, requestDgenLogin } from "@/lib/api";
+import { Download, Loader2, MessageSquare, Pencil, ShoppingCart, Star, UploadCloud } from "lucide-react";
+import { addToCart, createConversation, downloadFreeProduct, downloadOwnerProduct, fetchOrderDownload, fetchProductEntitlement, requestDgenLogin } from "@/lib/api";
 import type { ProductEntitlement } from "@/types/marketplace";
 import { useAuthStore } from "@/store/auth";
 import { ProductUpdateModal } from "@/components/product/ProductUpdateModal";
@@ -36,6 +36,9 @@ export function ProductActionButton({
   const [error, setError] = useState("");
   const [updateOpen, setUpdateOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [messageOpen, setMessageOpen] = useState(false);
+  const [messageBody, setMessageBody] = useState("");
+  const [messageBusy, setMessageBusy] = useState(false);
   const [entitlement, setEntitlement] = useState<ProductEntitlement | null>(null);
   const [entitlementLoading, setEntitlementLoading] = useState(true);
   const isFree = price <= 0;
@@ -135,6 +138,69 @@ export function ProductActionButton({
     }
   };
 
+  const messageSeller = async () => {
+    if (!isAuthenticated) {
+      requestDgenLogin(`/products/${slug}`);
+      return;
+    }
+    const body = messageBody.trim();
+    if (body.length < 3) {
+      setError("Write a short message before contacting the seller.");
+      return;
+    }
+    setMessageBusy(true);
+    setError("");
+    try {
+      const conversation = await createConversation({
+        title: `Question about ${productTitle}`,
+        body,
+        recipient_ids: [sellerId],
+        context_type: "product",
+        context_id: productId,
+      });
+      router.push(`/dashboard/conversations/${conversation.id}`);
+    } catch {
+      setError("Could not start a seller conversation.");
+    } finally {
+      setMessageBusy(false);
+    }
+  };
+
+  const sellerContactPanel = (
+    <div className="mt-3 border-t border-border pt-3">
+      {messageOpen ? (
+        <div className="grid gap-2">
+          <textarea
+            value={messageBody}
+            onChange={(event) => setMessageBody(event.target.value)}
+            rows={3}
+            maxLength={10000}
+            className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+            placeholder="Ask the seller a question..."
+          />
+          <button
+            type="button"
+            disabled={messageBusy || !messageBody.trim()}
+            onClick={() => void messageSeller()}
+            className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+          >
+            {messageBusy ? <Loader2 className="size-4 animate-spin" /> : <MessageSquare className="size-4" />}
+            Send message
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setMessageOpen(true)}
+          className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-border bg-[var(--bg-panel)] text-sm text-textPrimary hover:border-primary/50"
+        >
+          <MessageSquare className="size-4" />
+          Message seller
+        </button>
+      )}
+    </div>
+  );
+
   if (isOwner) {
     return (
       <>
@@ -180,6 +246,7 @@ export function ProductActionButton({
             <span>EULA: Standard EULA</span>
             <InfoHelpButton title="Product license agreement" description={eulaDescription} />
           </div>
+          {sellerContactPanel}
           {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
         </section>
         <ProductReviewDialog
@@ -220,6 +287,7 @@ export function ProductActionButton({
         <span>EULA: {isFree ? "Free EULA" : "Standard EULA"}</span>
         <InfoHelpButton title="Product license agreement" description={eulaDescription} />
       </div>
+      {sellerContactPanel}
       {error ? <p className="text-xs text-danger">{error}</p> : null}
     </section>
   );

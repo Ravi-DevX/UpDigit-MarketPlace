@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS support_ticket_messages;
+DROP TABLE IF EXISTS support_ticket_participants;
+DROP TABLE IF EXISTS support_tickets;
+DROP TABLE IF EXISTS support_ticket_priorities;
+DROP TABLE IF EXISTS support_ticket_statuses;
+DROP TABLE IF EXISTS support_ticket_categories;

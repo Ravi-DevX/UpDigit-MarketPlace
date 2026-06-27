@@ -12,6 +12,7 @@ import {
   Gift,
   Heart,
   LayoutDashboard,
+  LifeBuoy,
   LogOut,
   PackagePlus,
   PanelsTopLeft,
@@ -130,6 +131,7 @@ export function Navbar() {
   const [categories, setCategories] = useState<Category[]>(demoCategories);
   const [siteSettings, setSiteSettings] = useState<PublicSiteSettings>(defaultSiteSettings);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [accountOpen, setAccountOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -215,6 +217,7 @@ export function Navbar() {
   const mobileLinks = [
     { href: "/products", label: "Products", icon: PanelsTopLeft },
     { href: "/products", label: "Categories", icon: Tags },
+    { href: "/support", label: "Tickets", icon: LifeBuoy },
     { href: "/seller", label: "Seller", icon: Store },
     { href: "/products?sort=downloaded", label: "Trending", icon: TrendingUp },
   ];
@@ -304,6 +307,14 @@ export function Navbar() {
                 </NavigationMenuContent>
               </NavigationMenuItem>
 
+              <NavigationMenuItem>
+                <NavigationMenuLink asChild>
+                  <Link href="/support" className={navPill(pathname.startsWith("/support") || pathname.startsWith("/dashboard/tickets"))}>
+                    Tickets
+                  </Link>
+                </NavigationMenuLink>
+              </NavigationMenuItem>
+
             </NavigationMenuList>
           </NavigationMenu>
 
@@ -321,6 +332,9 @@ export function Navbar() {
               </Link>
               <Link href="/seller" className={navPill(pathname.startsWith("/seller"))}>
                 Seller
+              </Link>
+              <Link href="/support" className={navPill(pathname.startsWith("/support"))}>
+                Tickets
               </Link>
             </div>
 
@@ -347,15 +361,19 @@ export function Navbar() {
                 <span className="hidden sm:inline">Session</span>
               </span>
             ) : isAuth && user ? (
-              <NavigationMenu viewport={false} className="flex-none">
-                <NavigationMenuList>
-                  <NavigationMenuItem>
-                    <NavigationMenuTrigger className="h-10 gap-2 py-0 pl-1.5 pr-3">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setAccountOpen((open) => !open)}
+                  className="inline-flex h-10 items-center gap-2 rounded-full border border-border bg-surface py-0 pl-1.5 pr-3 text-sm text-textSecondary transition hover:border-primary/40 hover:bg-elevated hover:text-textPrimary"
+                  aria-expanded={accountOpen}
+                  aria-haspopup="menu"
+                >
                       <UserAvatar username={user.username} displayName={user.display_name} avatarURL={user.avatar_url} className="size-7 text-xs" />
                       <span className="hidden max-w-28 truncate sm:inline">{user.username || "Account"}</span>
-                    </NavigationMenuTrigger>
-                    <NavigationMenuContent className="left-auto right-0">
-                      <div className="w-[300px] p-3">
+                </button>
+                {accountOpen ? (
+                  <div className="absolute right-0 top-full z-50 mt-3 w-[300px] overflow-hidden rounded-2xl border border-border bg-[var(--bg-panel)] p-3 shadow-[0_24px_90px_rgba(0,0,0,0.42)] backdrop-blur-2xl" role="menu">
                         <div className="mb-2 rounded-2xl border border-border bg-surface p-4">
                           <div className="flex items-center gap-3">
                             <UserAvatar username={user.username} displayName={user.display_name} avatarURL={user.avatar_url} className="size-11 text-sm" />
@@ -367,27 +385,27 @@ export function Navbar() {
                         </div>
                         <div className="space-y-1">
                           {accountLinks.map((item) => (
-                            <NavigationMenuLink key={item.title} asChild>
-                              <Link href={item.href} className="flex-row items-center gap-3 rounded-xl px-3 py-2">
+                              <Link key={item.title} href={item.href} onClick={() => setAccountOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-textSecondary transition hover:bg-elevated hover:text-textPrimary" role="menuitem">
                                 {item.icon ? <item.icon className="size-4 text-primary" /> : null}
                                 {item.title}
                               </Link>
-                            </NavigationMenuLink>
                           ))}
                           <button
                             type="button"
-                            onClick={signOut}
+                            onClick={() => {
+                              setAccountOpen(false);
+                              void signOut();
+                            }}
                             className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-textSecondary transition hover:bg-elevated hover:text-textPrimary"
+                            role="menuitem"
                           >
                             <LogOut className="size-4 text-danger" />
                             Sign out
                           </button>
                         </div>
-                      </div>
-                    </NavigationMenuContent>
-                  </NavigationMenuItem>
-                </NavigationMenuList>
-              </NavigationMenu>
+                  </div>
+                ) : null}
+              </div>
             ) : (
               <button
                 type="button"

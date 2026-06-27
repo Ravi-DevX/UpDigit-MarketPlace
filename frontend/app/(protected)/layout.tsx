@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
-import { Bell, Heart, Package, Settings2, ShoppingCart, User } from "lucide-react";
+import { Bell, Heart, LifeBuoy, MessageSquare, Package, Settings2, ShoppingCart, User } from "lucide-react";
 import { AuthGate } from "@/components/auth/AuthGate";
 import { Footer } from "@/components/layout/Footer";
 import { Navbar } from "@/components/layout/Navbar";
@@ -45,6 +45,8 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
               {navItem("/dashboard", <User className="h-4 w-4" />, "Dashboard")}
               {user?.username ? navItem(`/members/${user.username}`, <User className="h-4 w-4" />, "Public profile") : null}
               {navItem("/dashboard/purchases", <Package className="h-4 w-4" />, "Purchases")}
+              {navItem("/dashboard/conversations", <MessageSquare className="h-4 w-4" />, "Conversations")}
+              {navItem("/dashboard/tickets", <LifeBuoy className="h-4 w-4" />, "Tickets")}
               {navItem("/dashboard/wishlist", <Heart className="h-4 w-4" />, "Wishlist")}
               {navItem("/dashboard/notifications", <Bell className="h-4 w-4" />, "Notifications")}
               {navItem("/dashboard/settings", <Settings2 className="h-4 w-4" />, "Settings")}

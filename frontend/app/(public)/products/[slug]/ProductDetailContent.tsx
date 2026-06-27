@@ -420,8 +420,8 @@ export async function ProductDetailContent({ slug, activeTab, initialProduct }: 
               <div className="mt-2 flex items-center gap-3">
                 {product.seller.avatar_url ? <img src={product.seller.avatar_url} alt={product.seller.username} loading="lazy" decoding="async" className="size-11 rounded-md object-cover" /> : <span className="flex size-11 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">{(product.seller.username || "S").slice(0, 2).toUpperCase()}</span>}
                 <div className="min-w-0">
-                  <Link href={`/sellers/${product.seller.username}`} className="truncate font-medium text-textPrimary hover:text-primary">
-                    {product.seller.seller_profile?.shop_name || product.seller.username}
+                  <Link href={`/sellers/${product.seller.seller_profile?.shop_slug || product.seller.username}`} className="truncate font-medium text-textPrimary hover:text-primary">
+                    {product.seller.seller_profile?.shop_name || product.seller.display_name || product.seller.username}
                   </Link>
                   <p className="text-xs text-textSecondary">Owner</p>
                 </div>
